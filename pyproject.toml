@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ssh-stats"
+version = "1.0.0"
+description = "SSH log exporter for Prometheus and Grafana."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["ssh", "prometheus", "grafana", "metrics", "exporter", "systemd"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: No Input/Output (Daemon)",
+  "Intended Audience :: System Administrators",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: System :: Monitoring",
+  "Topic :: System :: Systems Administration",
+]
+dependencies = [
+  "prometheus_client>=0.20,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2",
+  "pyinstaller>=6.0",
+  "ruff>=0.11",
+]
+
+[project.scripts]
+ssh-stats = "ssh_stats:main"
+
+[tool.setuptools]
+py-modules = ["ssh_stats"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

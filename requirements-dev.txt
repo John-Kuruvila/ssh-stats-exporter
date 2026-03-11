@@ -1,0 +1,4 @@
+-r requirements.txt
+build>=1.2
+pyinstaller>=6.0
+ruff>=0.11

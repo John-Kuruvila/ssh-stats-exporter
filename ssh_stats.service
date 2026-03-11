@@ -1,0 +1,53 @@
+[Unit]
+Description=SSH statistics exporter for Prometheus and Grafana
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Root is the most portable default because many distros keep SSH auth logs
+# readable only by root. If your host exposes the logs to a dedicated service
+# account, override User= and Group= in a drop-in and keep the hardening below.
+User=root
+Group=root
+EnvironmentFile=-/etc/default/ssh-stats
+EnvironmentFile=-/etc/sysconfig/ssh-stats
+ExecStart=/usr/local/bin/ssh-stats
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+Environment=SSH_STATS_LISTEN_ADDRESS=127.0.0.1
+Environment=SSH_STATS_PORT=9122
+Environment=SSH_STATS_LOG_DIR=/var/log
+# Override in /etc/default/ssh-stats or /etc/sysconfig/ssh-stats on
+# RHEL-family hosts (usually `secure`).
+Environment=SSH_STATS_LOG_FILE=auth.log
+Environment=SSH_STATS_LOG_LEVEL=INFO
+Environment=SSH_STATS_POLL_INTERVAL=1.0
+Environment=SSH_STATS_REFRESH_INTERVAL=30.0
+Environment=SSH_STATS_MAX_HISTORY=5000
+Environment=SSH_STATS_METRICS_LABEL_MODE=bounded
+Environment=SSH_STATS_METRICS_MAX_USERS=200
+Environment=SSH_STATS_METRICS_MAX_SOURCE_IPS=500
+Environment=SSH_STATS_METRICS_MAX_AUTH_METHODS=32
+Environment=SSH_STATS_DISABLE_JSON_API=
+Environment=SSH_STATS_CORS_ALLOW_ORIGINS=
+
+[Install]
+WantedBy=multi-user.target
