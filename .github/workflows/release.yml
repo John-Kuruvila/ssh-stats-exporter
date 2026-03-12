@@ -35,7 +35,7 @@ jobs:
           python -m pip install -r requirements-dev.txt
 
       - name: Build binary
-        run: python -m PyInstaller --clean --onefile --name ssh-stats ssh_stats.py
+        run: python -m PyInstaller --clean --onefile --name ssh-stats ssh_stats/__main__.py
 
       - name: Assemble release bundle
         env:
@@ -45,9 +45,9 @@ jobs:
           bundle="ssh-stats-${VERSION}-${ARCH}"
           mkdir -p "release/${bundle}"
           install -m 0755 "dist/ssh-stats" "release/${bundle}/ssh-stats"
-          install -m 0644 "ssh_stats.service" "release/${bundle}/ssh_stats.service"
-          install -m 0644 "ssh_stats.env.example" "release/${bundle}/ssh_stats.env.example"
-          install -m 0644 "grafana-dashboard.json" "release/${bundle}/grafana-dashboard.json"
+          install -m 0644 "contrib/ssh_stats.service" "release/${bundle}/ssh_stats.service"
+          install -m 0644 "contrib/ssh_stats.env.example" "release/${bundle}/ssh_stats.env.example"
+          install -m 0644 "contrib/grafana-dashboard.json" "release/${bundle}/grafana-dashboard.json"
           install -m 0644 "README.md" "release/${bundle}/README.md"
           install -m 0644 "LICENSE" "release/${bundle}/LICENSE"
           install -m 0644 "CHANGELOG.md" "release/${bundle}/CHANGELOG.md"

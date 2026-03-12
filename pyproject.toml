@@ -38,10 +38,10 @@ dev = [
 ]
 
 [project.scripts]
-ssh-stats = "ssh_stats:main"
+ssh-stats = "ssh_stats.cli:main"
 
 [tool.setuptools]
-py-modules = ["ssh_stats"]
+packages = ["ssh_stats"]
 
 [tool.ruff]
 target-version = "py39"

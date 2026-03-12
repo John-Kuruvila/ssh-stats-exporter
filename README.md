@@ -6,9 +6,13 @@
 
 - SSH login, logout, failure, and invalid-user metrics
 - Session history, active-session, and user-status JSON endpoints
-- A bundled Grafana dashboard in `grafana-dashboard.json`
-- A systemd unit and environment file example for release installs
+- A bundled Grafana dashboard in `contrib/grafana-dashboard.json`
+- A systemd unit and environment file example in `contrib/` for release installs
 - Safer public defaults: loopback bind, no wildcard CORS, and bounded metric labels
+
+## Dashboard
+
+![Grafana dashboard](contrib/grafana-dashboard.png)
 
 ## Security Model
 
@@ -106,7 +110,7 @@ sum by (user) (rate(ssh_session_duration_seconds_count[1h]))
 
 ## Grafana Setup
 
-The dashboard in `grafana-dashboard.json` expects two datasources:
+The dashboard in `contrib/grafana-dashboard.json` expects two datasources:
 
 1. A Prometheus datasource for time-series panels
 2. The [Infinity datasource plugin](https://grafana.com/grafana/plugins/yesoreyeram-infinity-datasource/) for JSON table panels
@@ -134,7 +138,7 @@ Import flow:
 
 1. Create the Prometheus datasource
 2. Install and configure the Infinity datasource
-3. Import `grafana-dashboard.json`
+3. Import `contrib/grafana-dashboard.json`
 4. Map `DS_PROMETHEUS` to your Prometheus datasource
 5. Map `DS_INFINITY` to the Infinity datasource that points at `ssh-stats`
 
@@ -243,7 +247,7 @@ If you prefer to run from source instead of using a GitHub release binary:
 
 ```bash
 python3 -m pip install -r requirements.txt
-python3 ssh_stats.py
+python3 -m ssh_stats
 ```
 
 For a pip-style editable install:

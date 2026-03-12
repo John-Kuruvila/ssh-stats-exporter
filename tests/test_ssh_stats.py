@@ -11,6 +11,8 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from prometheus_client import generate_latest
+
 from ssh_stats import (
     ACTIVE_SESSIONS_GAUGE,
     ERROR_COUNTER,
@@ -26,7 +28,6 @@ from ssh_stats import (
     MetricsHandler,
     SSHLogParser,
     build_arg_parser,
-    generate_latest,
     parse_iso_timestamp,
     registry,
 )
@@ -168,7 +169,7 @@ class SSHStatsParserTests(unittest.TestCase):
             metrics_output,
         )
 
-    @patch("ssh_stats.subprocess.run")
+    @patch("ssh_stats.parser.subprocess.run")
     def test_refresh_runtime_state_tracks_remote_sessions_only(self, mock_run) -> None:
         mock_run.return_value = subprocess.CompletedProcess(
             args=["who"],
@@ -199,7 +200,7 @@ class SSHStatsParserTests(unittest.TestCase):
         self.assertEqual(parser.api_users_status()[0]["status"], "Online")
         self.assertEqual(parser.api_users_status()[1]["status"], "Offline")
 
-    @patch("ssh_stats.subprocess.run")
+    @patch("ssh_stats.parser.subprocess.run")
     def test_users_status_includes_active_users_not_yet_seen_in_logs(self, mock_run) -> None:
         mock_run.return_value = subprocess.CompletedProcess(
             args=["who"],
@@ -232,7 +233,7 @@ class SSHStatsParserTests(unittest.TestCase):
         metrics_output = generate_latest(registry).decode()
         self.assertIn('ssh_user_online{user="dave"} 1.0', metrics_output)
 
-    @patch("ssh_stats.subprocess.run")
+    @patch("ssh_stats.parser.subprocess.run")
     def test_refresh_runtime_state_falls_back_to_plain_who_output(self, mock_run) -> None:
         mock_run.side_effect = [
             subprocess.CompletedProcess(
@@ -267,7 +268,7 @@ class SSHStatsParserTests(unittest.TestCase):
             ],
         )
 
-    @patch("ssh_stats.subprocess.run")
+    @patch("ssh_stats.parser.subprocess.run")
     def test_plain_who_without_source_is_not_misclassified_as_remote(self, mock_run) -> None:
         mock_run.side_effect = [
             subprocess.CompletedProcess(
@@ -289,7 +290,7 @@ class SSHStatsParserTests(unittest.TestCase):
 
         self.assertEqual(parser.api_sessions_active(), [])
 
-    @patch("ssh_stats.subprocess.run")
+    @patch("ssh_stats.parser.subprocess.run")
     def test_ipv6_mapped_remote_source_is_not_filtered_out(self, mock_run) -> None:
         mock_run.return_value = subprocess.CompletedProcess(
             args=["who"],
