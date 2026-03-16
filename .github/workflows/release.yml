@@ -14,8 +14,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # linux-amd64: use Ubuntu 22.04 so the binary links against GLIBC 2.35 and runs on older hosts (e.g. Ubuntu 22.04, Debian 11/12). See: GLIBC_2.38 not found.
           - arch: linux-amd64
-            runner: ubuntu-latest
+            runner: ubuntu-22.04
           - arch: linux-arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
@@ -35,7 +36,7 @@ jobs:
           python -m pip install -r requirements-dev.txt
 
       - name: Build binary
-        run: python -m PyInstaller --clean --onefile --name ssh-stats ssh_stats/__main__.py
+        run: python -m PyInstaller --clean --onefile --name ssh-stats pyi_entry.py
 
       - name: Assemble release bundle
         env:
