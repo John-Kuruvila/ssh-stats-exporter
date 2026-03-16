@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 import subprocess
 import tempfile
 import threading
@@ -51,6 +52,12 @@ class SSHStatsParserTests(unittest.TestCase):
         UNIQUE_USERS_GAUGE.set(0)
         MetricsHandler.enable_json_api = True
         MetricsHandler.cors_allowed_origins = ()
+        self.gethostbyaddr_patcher = patch(
+            "ssh_stats.parser.socket.gethostbyaddr",
+            side_effect=socket.herror,
+        )
+        self.mock_gethostbyaddr = self.gethostbyaddr_patcher.start()
+        self.addCleanup(self.gethostbyaddr_patcher.stop)
 
     def test_keyboard_interactive_auth_method_is_parsed(self) -> None:
         parser = SSHLogParser()
@@ -143,7 +150,7 @@ class SSHStatsParserTests(unittest.TestCase):
 
         metrics_output = generate_latest(registry).decode()
         self.assertIn(
-            'ssh_invalid_user_attempts_total{source_ip="10.0.0.1",user="ghost"} 1.0',
+            'ssh_invalid_user_attempts_total{source_display="10.0.0.1",source_ip="10.0.0.1",user="ghost"} 1.0',
             metrics_output,
         )
 
@@ -161,13 +168,49 @@ class SSHStatsParserTests(unittest.TestCase):
 
         metrics_output = generate_latest(registry).decode()
         self.assertIn(
-            'ssh_failed_logins_total{source_ip="10.0.0.1",user="alice"} 1.0',
+            'ssh_failed_logins_total{source_display="10.0.0.1",source_ip="10.0.0.1",user="alice"} 1.0',
             metrics_output,
         )
         self.assertIn(
-            'ssh_failed_logins_total{source_ip="__other__",user="__other__"} 1.0',
+            'ssh_failed_logins_total{source_display="__other__",source_ip="__other__",user="__other__"} 1.0',
             metrics_output,
         )
+
+    def test_reverse_dns_success_populates_source_display_and_cache(self) -> None:
+        self.mock_gethostbyaddr.side_effect = None
+        self.mock_gethostbyaddr.return_value = (
+            "client.example.com",
+            [],
+            ["10.0.0.1"],
+        )
+        parser = SSHLogParser(hostname_cache_ttl=60, hostname_negative_ttl=60)
+
+        parser.parse_line(
+            "Mar  8 00:17:01 host sshd[101]: Failed password for alice "
+            "from 10.0.0.1 port 2222 ssh2"
+        )
+        parser.parse_line(
+            "Mar  8 00:17:02 host sshd[102]: Failed password for bob "
+            "from 10.0.0.1 port 2223 ssh2"
+        )
+
+        failed_attempts = parser.api_failed_attempts(limit=10)
+        self.assertEqual(
+            failed_attempts[0]["source_display"],
+            "client.example.com (10.0.0.1)",
+        )
+        self.assertEqual(failed_attempts[0]["source_hostname"], "client.example.com")
+        self.assertEqual(self.mock_gethostbyaddr.call_count, 1)
+
+    def test_reverse_dns_failures_are_negative_cached(self) -> None:
+        parser = SSHLogParser(hostname_negative_ttl=60)
+
+        first = parser._source_details("10.0.0.1")
+        second = parser._source_details("10.0.0.1")
+
+        self.assertEqual(first["source_display"], "10.0.0.1")
+        self.assertEqual(second["source_display"], "10.0.0.1")
+        self.assertEqual(self.mock_gethostbyaddr.call_count, 1)
 
     @patch("ssh_stats.parser.subprocess.run")
     def test_refresh_runtime_state_tracks_remote_sessions_only(self, mock_run) -> None:
@@ -194,6 +237,9 @@ class SSHStatsParserTests(unittest.TestCase):
                     "tty": "pts/0",
                     "login_time": "2026-03-11 12:00",
                     "source": "192.168.1.20",
+                    "source_ip": "192.168.1.20",
+                    "source_hostname": "",
+                    "source_display": "192.168.1.20",
                 }
             ],
         )
@@ -264,6 +310,9 @@ class SSHStatsParserTests(unittest.TestCase):
                     "tty": "pts/0",
                     "login_time": "Mar 11 12:00",
                     "source": "192.168.1.20",
+                    "source_ip": "192.168.1.20",
+                    "source_hostname": "",
+                    "source_display": "192.168.1.20",
                 }
             ],
         )
@@ -310,8 +359,73 @@ class SSHStatsParserTests(unittest.TestCase):
                     "tty": "pts/0",
                     "login_time": "2026-03-11 12:00",
                     "source": "::ffff:192.168.1.20",
+                    "source_ip": "::ffff:192.168.1.20",
+                    "source_hostname": "",
+                    "source_display": "::ffff:192.168.1.20",
                 }
             ],
+        )
+
+    @patch("ssh_stats.parser.subprocess.run")
+    def test_refresh_runtime_state_preserves_hostname_sources_from_who(self, mock_run) -> None:
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["who"],
+            returncode=0,
+            stdout="alice pts/0 2026-03-11 12:00 client.example.com\n",
+            stderr="",
+        )
+        parser = SSHLogParser()
+
+        parser.refresh_runtime_state()
+
+        self.assertEqual(
+            parser.api_sessions_active(),
+            [
+                {
+                    "user": "alice",
+                    "tty": "pts/0",
+                    "login_time": "2026-03-11 12:00",
+                    "source": "client.example.com",
+                    "source_ip": "client.example.com",
+                    "source_hostname": "client.example.com",
+                    "source_display": "client.example.com",
+                }
+            ],
+        )
+
+    def test_session_history_and_summary_include_hostname_fields(self) -> None:
+        self.mock_gethostbyaddr.side_effect = None
+        self.mock_gethostbyaddr.return_value = (
+            "client.example.com",
+            [],
+            ["10.0.0.1"],
+        )
+        parser = SSHLogParser()
+
+        parser.parse_line(
+            "Mar  8 00:17:01 host sshd[123]: Accepted publickey for alice "
+            "from 10.0.0.1 port 2222 ssh2"
+        )
+        parser.parse_line(
+            "Mar  8 00:17:02 host sshd[123]: pam_unix(sshd:session): session opened "
+            "for user alice(uid=1000) by (uid=0)"
+        )
+        parser.parse_line(
+            "Mar  8 00:18:02 host sshd[123]: pam_unix(sshd:session): session closed "
+            "for user alice"
+        )
+
+        history = parser.api_sessions_history(limit=10)
+        summary = parser.api_summary()
+
+        self.assertEqual(history[0]["source_hostname"], "client.example.com")
+        self.assertEqual(
+            history[0]["source_display"],
+            "client.example.com (10.0.0.1)",
+        )
+        self.assertEqual(
+            summary["top_sources"],
+            {"client.example.com (10.0.0.1)": 1},
         )
 
     def test_heatmap_respects_time_range(self) -> None:
@@ -437,6 +551,12 @@ class SSHStatsHTTPTests(unittest.TestCase):
         ):
             metric._metrics.clear()
         UNIQUE_USERS_GAUGE.set(0)
+        self.gethostbyaddr_patcher = patch(
+            "ssh_stats.parser.socket.gethostbyaddr",
+            side_effect=socket.herror,
+        )
+        self.mock_gethostbyaddr = self.gethostbyaddr_patcher.start()
+        self.addCleanup(self.gethostbyaddr_patcher.stop)
 
     def _start_server(
         self,
@@ -515,6 +635,30 @@ class SSHStatsHTTPTests(unittest.TestCase):
         self.assertEqual(allow_origin, "*")
         self.assertEqual(allow_methods, "GET, OPTIONS")
 
+    def test_failed_attempt_api_returns_hostname_fields(self) -> None:
+        self.mock_gethostbyaddr.side_effect = None
+        self.mock_gethostbyaddr.return_value = (
+            "client.example.com",
+            [],
+            ["10.0.0.1"],
+        )
+        parser = SSHLogParser()
+        parser.parse_line(
+            "Mar  8 00:17:01 host sshd[101]: Failed password for alice "
+            "from 10.0.0.1 port 2222 ssh2"
+        )
+        base_url = self._start_server(parser)
+
+        with urlopen(f"{base_url}/api/failed") as response:
+            body = json.load(response)
+
+        self.assertEqual(body[0]["source_ip"], "10.0.0.1")
+        self.assertEqual(body[0]["source_hostname"], "client.example.com")
+        self.assertEqual(
+            body[0]["source_display"],
+            "client.example.com (10.0.0.1)",
+        )
+
 
 class SSHStatsConfigTests(unittest.TestCase):
     @patch.dict(
@@ -523,6 +667,9 @@ class SSHStatsConfigTests(unittest.TestCase):
             "SSH_STATS_LISTEN_ADDRESS": "192.0.2.10",
             "SSH_STATS_DISABLE_JSON_API": "true",
             "SSH_STATS_CORS_ALLOW_ORIGINS": "https://grafana.example.com,https://ops.example.com",
+            "SSH_STATS_HOSTNAME_LOOKUP_TIMEOUT": "1.5",
+            "SSH_STATS_HOSTNAME_CACHE_TTL": "120",
+            "SSH_STATS_HOSTNAME_NEGATIVE_TTL": "30",
         },
         clear=False,
     )
@@ -535,6 +682,9 @@ class SSHStatsConfigTests(unittest.TestCase):
             args.cors_allow_origins,
             ["https://grafana.example.com", "https://ops.example.com"],
         )
+        self.assertEqual(args.hostname_lookup_timeout, 1.5)
+        self.assertEqual(args.hostname_cache_ttl, 120.0)
+        self.assertEqual(args.hostname_negative_ttl, 30.0)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,9 @@ from typing import Optional
 
 from .constants import (
     APP_VERSION,
+    DEFAULT_HOSTNAME_CACHE_TTL,
+    DEFAULT_HOSTNAME_LOOKUP_TIMEOUT,
+    DEFAULT_HOSTNAME_NEGATIVE_TTL,
     DEFAULT_LISTEN_ADDRESS,
     DEFAULT_LOG_DIR,
     DEFAULT_LOG_FILE,
@@ -153,6 +156,48 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--hostname-lookup-timeout",
+        type=float,
+        default=float(
+            os.environ.get(
+                "SSH_STATS_HOSTNAME_LOOKUP_TIMEOUT",
+                str(DEFAULT_HOSTNAME_LOOKUP_TIMEOUT),
+            )
+        ),
+        help=(
+            "Maximum seconds to wait for a reverse-DNS lookup before falling back "
+            f"to the IP (default: {DEFAULT_HOSTNAME_LOOKUP_TIMEOUT})"
+        ),
+    )
+    parser.add_argument(
+        "--hostname-cache-ttl",
+        type=float,
+        default=float(
+            os.environ.get(
+                "SSH_STATS_HOSTNAME_CACHE_TTL",
+                str(DEFAULT_HOSTNAME_CACHE_TTL),
+            )
+        ),
+        help=(
+            "Seconds to cache successful reverse-DNS lookups "
+            f"(default: {DEFAULT_HOSTNAME_CACHE_TTL})"
+        ),
+    )
+    parser.add_argument(
+        "--hostname-negative-ttl",
+        type=float,
+        default=float(
+            os.environ.get(
+                "SSH_STATS_HOSTNAME_NEGATIVE_TTL",
+                str(DEFAULT_HOSTNAME_NEGATIVE_TTL),
+            )
+        ),
+        help=(
+            "Seconds to cache failed reverse-DNS lookups "
+            f"(default: {DEFAULT_HOSTNAME_NEGATIVE_TTL})"
+        ),
+    )
+    parser.add_argument(
         "--disable-json-api",
         action="store_true",
         default=parse_env_bool("SSH_STATS_DISABLE_JSON_API"),
@@ -189,6 +234,12 @@ def main(argv: Optional[list[str]] = None) -> None:
         parser.error("--metrics-max-source-ips must be greater than zero")
     if args.metrics_max_auth_methods <= 0:
         parser.error("--metrics-max-auth-methods must be greater than zero")
+    if args.hostname_lookup_timeout < 0:
+        parser.error("--hostname-lookup-timeout must be zero or greater")
+    if args.hostname_cache_ttl < 0:
+        parser.error("--hostname-cache-ttl must be zero or greater")
+    if args.hostname_negative_ttl < 0:
+        parser.error("--hostname-negative-ttl must be zero or greater")
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
@@ -203,6 +254,9 @@ def main(argv: Optional[list[str]] = None) -> None:
         metrics_max_users=args.metrics_max_users,
         metrics_max_source_ips=args.metrics_max_source_ips,
         metrics_max_auth_methods=args.metrics_max_auth_methods,
+        hostname_lookup_timeout=args.hostname_lookup_timeout,
+        hostname_cache_ttl=args.hostname_cache_ttl,
+        hostname_negative_ttl=args.hostname_negative_ttl,
     )
     logger.info("Loading existing log files from %s", args.log_dir)
     start_inode, start_offset = ssh_parser.load_existing_logs()

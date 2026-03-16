@@ -1,11 +1,14 @@
 """Core SSH log parser and state machine."""
 
 import gzip
+import ipaddress
 import logging
 import os
 import re
+import socket
 import subprocess
 import threading
+import time
 from collections import OrderedDict, defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +19,9 @@ from .constants import (
     APP_VERSION,
     CONNECTION_CLOSED_PREAUTH_RE,
     DEFAULT_API_LIMIT,
+    DEFAULT_HOSTNAME_CACHE_TTL,
+    DEFAULT_HOSTNAME_LOOKUP_TIMEOUT,
+    DEFAULT_HOSTNAME_NEGATIVE_TTL,
     DEFAULT_LOG_DIR,
     DEFAULT_LOG_FILE,
     DEFAULT_MAX_HISTORY,
@@ -70,6 +76,9 @@ class SSHLogParser:
         metrics_max_users: int = DEFAULT_METRICS_MAX_USERS,
         metrics_max_source_ips: int = DEFAULT_METRICS_MAX_SOURCE_IPS,
         metrics_max_auth_methods: int = DEFAULT_METRICS_MAX_AUTH_METHODS,
+        hostname_lookup_timeout: float = DEFAULT_HOSTNAME_LOOKUP_TIMEOUT,
+        hostname_cache_ttl: float = DEFAULT_HOSTNAME_CACHE_TTL,
+        hostname_negative_ttl: float = DEFAULT_HOSTNAME_NEGATIVE_TTL,
     ):
         self.log_dir = Path(log_dir)
         self.log_file = log_file
@@ -78,9 +87,12 @@ class SSHLogParser:
         self.metrics_max_users = metrics_max_users
         self.metrics_max_source_ips = metrics_max_source_ips
         self.metrics_max_auth_methods = metrics_max_auth_methods
+        self.hostname_lookup_timeout = hostname_lookup_timeout
+        self.hostname_cache_ttl = hostname_cache_ttl
+        self.hostname_negative_ttl = hostname_negative_ttl
 
         self._lock = threading.RLock()
-        self._metrics_lock = threading.Lock()
+        self._metrics_lock = threading.RLock()
 
         self.open_sessions: dict[str, SessionInfo] = {}
         self._pending_accepts: OrderedDict[str, dict[str, str]] = OrderedDict()
@@ -93,11 +105,13 @@ class SSHLogParser:
         self.login_events: list[datetime] = []
         self._active_sessions: list[dict[str, str]] = []
 
-        self._active_session_labels: set[tuple[str, str]] = set()
+        self._active_session_labels: set[tuple[str, str, str]] = set()
         self._user_online_labels: set[str] = set()
         self._metric_users: set[str] = set()
         self._metric_source_ips: set[str] = set()
+        self._metric_source_display_by_ip: dict[str, str] = {}
         self._metric_auth_methods: set[str] = set()
+        self._hostname_cache: dict[str, dict[str, Any]] = {}
         self._health_checks: dict[str, dict[str, str]] = {}
         self._set_health_check(
             "log_access",
@@ -140,6 +154,86 @@ class SSHLogParser:
             "checks": checks,
         }
 
+    def _is_ip_address(self, value: str) -> bool:
+        try:
+            ipaddress.ip_address(value)
+            return True
+        except ValueError:
+            return False
+
+    def _normalize_hostname(self, hostname: str) -> str:
+        return hostname.strip().rstrip(".").lower()
+
+    def _resolve_hostname(self, source_ip: str) -> str:
+        if not source_ip or not self._is_ip_address(source_ip):
+            return ""
+
+        now = time.monotonic()
+        with self._lock:
+            cached = self._hostname_cache.get(source_ip)
+            if cached and cached["expires_at"] > now:
+                return cached["hostname"]
+
+        resolved: dict[str, str] = {}
+
+        def lookup() -> None:
+            try:
+                hostname, _, _ = socket.gethostbyaddr(source_ip)
+            except OSError:
+                return
+            normalized = self._normalize_hostname(hostname)
+            if normalized and normalized != source_ip:
+                resolved["hostname"] = normalized
+
+        thread = threading.Thread(target=lookup, daemon=True)
+        thread.start()
+        thread.join(self.hostname_lookup_timeout)
+
+        hostname = ""
+        if thread.is_alive():
+            logger.debug("Reverse-DNS lookup timed out for %s", source_ip)
+        else:
+            hostname = resolved.get("hostname", "")
+
+        ttl = self.hostname_cache_ttl if hostname else self.hostname_negative_ttl
+        with self._lock:
+            self._hostname_cache[source_ip] = {
+                "hostname": hostname,
+                "expires_at": now + ttl,
+            }
+        return hostname
+
+    def _source_details(self, source: str) -> dict[str, str]:
+        source = (source or "").strip()
+        if not source:
+            return {
+                "source": "",
+                "source_ip": "",
+                "source_hostname": "",
+                "source_display": "",
+            }
+
+        if self._is_ip_address(source):
+            source_ip = source
+            source_hostname = self._resolve_hostname(source_ip)
+            source_display = (
+                f"{source_hostname} ({source_ip})" if source_hostname else source_ip
+            )
+            return {
+                "source": source_display,
+                "source_ip": source_ip,
+                "source_hostname": source_hostname,
+                "source_display": source_display,
+            }
+
+        source_hostname = self._normalize_hostname(source)
+        return {
+            "source": source_hostname or source,
+            "source_ip": source,
+            "source_hostname": source_hostname,
+            "source_display": source_hostname or source,
+        }
+
     def _bounded_metric_label(self, seen: set[str], limit: int, value: str) -> str:
         if self.metrics_label_mode == "full":
             return value
@@ -150,33 +244,64 @@ class SSHLogParser:
             return value
         return OVERFLOW_LABEL
 
-    def _metric_user_source_labels(self, user: str, source_ip: str) -> tuple[str, str]:
+    def _metric_source_labels(
+        self, source_ip: str, source_display: str
+    ) -> tuple[str, str]:
         with self._metrics_lock:
+            metric_source_ip = self._bounded_metric_label(
+                self._metric_source_ips,
+                self.metrics_max_source_ips,
+                source_ip or source_display,
+            )
+            if metric_source_ip == OVERFLOW_LABEL:
+                return OVERFLOW_LABEL, OVERFLOW_LABEL
+            if metric_source_ip not in self._metric_source_display_by_ip:
+                self._metric_source_display_by_ip[metric_source_ip] = (
+                    source_display or source_ip
+                )
             return (
-                self._bounded_metric_label(self._metric_users, self.metrics_max_users, user),
-                self._bounded_metric_label(
-                    self._metric_source_ips,
-                    self.metrics_max_source_ips,
-                    source_ip,
-                ),
+                metric_source_ip,
+                self._metric_source_display_by_ip[metric_source_ip],
             )
 
-    def _metric_login_labels(
-        self, user: str, source_ip: str, auth_method: str
+    def _metric_user_source_labels(
+        self, user: str, source_ip: str, source_display: str
     ) -> tuple[str, str, str]:
         with self._metrics_lock:
+            metric_user = self._bounded_metric_label(
+                self._metric_users,
+                self.metrics_max_users,
+                user,
+            )
+            metric_source_ip, metric_source_display = self._metric_source_labels(
+                source_ip,
+                source_display,
+            )
+            return (metric_user, metric_source_ip, metric_source_display)
+
+    def _metric_login_labels(
+        self, user: str, source_ip: str, source_display: str, auth_method: str
+    ) -> tuple[str, str, str, str]:
+        with self._metrics_lock:
+            metric_user = self._bounded_metric_label(
+                self._metric_users,
+                self.metrics_max_users,
+                user,
+            )
+            metric_source_ip, metric_source_display = self._metric_source_labels(
+                source_ip,
+                source_display,
+            )
+            metric_auth_method = self._bounded_metric_label(
+                self._metric_auth_methods,
+                self.metrics_max_auth_methods,
+                auth_method,
+            )
             return (
-                self._bounded_metric_label(self._metric_users, self.metrics_max_users, user),
-                self._bounded_metric_label(
-                    self._metric_source_ips,
-                    self.metrics_max_source_ips,
-                    source_ip,
-                ),
-                self._bounded_metric_label(
-                    self._metric_auth_methods,
-                    self.metrics_max_auth_methods,
-                    auth_method,
-                ),
+                metric_user,
+                metric_source_ip,
+                metric_source_display,
+                metric_auth_method,
             )
 
     def _metric_user_label(self, user: str) -> str:
@@ -185,14 +310,6 @@ class SSHLogParser:
                 self._metric_users,
                 self.metrics_max_users,
                 user,
-            )
-
-    def _metric_source_ip_label(self, source_ip: str) -> str:
-        with self._metrics_lock:
-            return self._bounded_metric_label(
-                self._metric_source_ips,
-                self.metrics_max_source_ips,
-                source_ip,
             )
 
     def _record_unique_user(self, user: str) -> None:
@@ -239,6 +356,8 @@ class SSHLogParser:
         timestamp: Optional[datetime],
         user: str,
         source_ip: str,
+        source_hostname: str,
+        source_display: str,
         port: str,
         event_type: str,
     ) -> dict[str, Any]:
@@ -246,6 +365,8 @@ class SSHLogParser:
             "timestamp": timestamp.isoformat() if timestamp else None,
             "user": user,
             "source_ip": source_ip,
+            "source_hostname": source_hostname,
+            "source_display": source_display or source_ip,
             "port": port,
             "type": event_type,
         }
@@ -416,6 +537,7 @@ class SSHLogParser:
             for line in result.stdout.splitlines():
                 parsed = self._parse_who_line(line)
                 if parsed and self._is_remote_session(parsed["source"]):
+                    parsed.update(self._source_details(parsed["source"]))
                     sessions.append(parsed)
             self._set_health_check(
                 "who_refresh",
@@ -443,10 +565,13 @@ class SSHLogParser:
         match = ACCEPTED_RE.search(line)
         if match:
             pid, auth_method, user, source_ip, port = match.groups()
+            source_details = self._source_details(source_ip)
             with self._lock:
                 self._pending_accepts[pid] = {
                     "auth_method": auth_method,
-                    "source_ip": source_ip,
+                    "source_ip": source_details["source_ip"],
+                    "source_hostname": source_details["source_hostname"],
+                    "source_display": source_details["source_display"],
                     "port": port,
                 }
                 self._pending_accepts.move_to_end(pid)
@@ -456,14 +581,21 @@ class SSHLogParser:
                     self.login_events.append(timestamp)
                     self._trim_list(self.login_events)
                     self.login_heatmap[timestamp.weekday()][timestamp.hour] += 1
-            metric_user, metric_source_ip, metric_auth_method = self._metric_login_labels(
+            (
+                metric_user,
+                metric_source_ip,
+                metric_source_display,
+                metric_auth_method,
+            ) = self._metric_login_labels(
                 user,
-                source_ip,
+                source_details["source_ip"],
+                source_details["source_display"],
                 auth_method,
             )
             LOGIN_COUNTER.labels(
                 user=metric_user,
                 source_ip=metric_source_ip,
+                source_display=metric_source_display,
                 auth_method=metric_auth_method,
             ).inc()
             self._record_unique_user(user)
@@ -478,6 +610,8 @@ class SSHLogParser:
                     pid=pid,
                     user=user,
                     source_ip=accept_info.get("source_ip", ""),
+                    source_hostname=accept_info.get("source_hostname", ""),
+                    source_display=accept_info.get("source_display", ""),
                     auth_method=accept_info.get("auth_method", ""),
                     port=accept_info.get("port", ""),
                     login_time=timestamp,
@@ -507,16 +641,35 @@ class SSHLogParser:
         match = INVALID_USER_RE.search(line)
         if match:
             pid, user, source_ip = match.groups()
+            source_details = self._source_details(source_ip)
             if self._consume_pending_invalid_user(pid, user, source_ip):
                 return
 
-            metric_user, metric_source_ip = self._metric_user_source_labels(user, source_ip)
-            FAILED_LOGIN_COUNTER.labels(user=metric_user, source_ip=metric_source_ip).inc()
-            INVALID_USER_COUNTER.labels(user=metric_user, source_ip=metric_source_ip).inc()
+            (
+                metric_user,
+                metric_source_ip,
+                metric_source_display,
+            ) = self._metric_user_source_labels(
+                user,
+                source_details["source_ip"],
+                source_details["source_display"],
+            )
+            FAILED_LOGIN_COUNTER.labels(
+                user=metric_user,
+                source_ip=metric_source_ip,
+                source_display=metric_source_display,
+            ).inc()
+            INVALID_USER_COUNTER.labels(
+                user=metric_user,
+                source_ip=metric_source_ip,
+                source_display=metric_source_display,
+            ).inc()
             event = self._append_failed_attempt(
                 timestamp=timestamp,
                 user=user,
-                source_ip=source_ip,
+                source_ip=source_details["source_ip"],
+                source_hostname=source_details["source_hostname"],
+                source_display=source_details["source_display"],
                 port="",
                 event_type="invalid_user",
             )
@@ -527,19 +680,38 @@ class SSHLogParser:
         if match:
             pid, invalid_user_flag, user, source_ip, port = match.groups()
             event_type = "invalid_user" if invalid_user_flag else "failed_password"
+            source_details = self._source_details(source_ip)
             if invalid_user_flag and self._consume_pending_invalid_user(
                 pid, user, source_ip, port=port
             ):
                 return
 
-            metric_user, metric_source_ip = self._metric_user_source_labels(user, source_ip)
-            FAILED_LOGIN_COUNTER.labels(user=metric_user, source_ip=metric_source_ip).inc()
+            (
+                metric_user,
+                metric_source_ip,
+                metric_source_display,
+            ) = self._metric_user_source_labels(
+                user,
+                source_details["source_ip"],
+                source_details["source_display"],
+            )
+            FAILED_LOGIN_COUNTER.labels(
+                user=metric_user,
+                source_ip=metric_source_ip,
+                source_display=metric_source_display,
+            ).inc()
             if invalid_user_flag:
-                INVALID_USER_COUNTER.labels(user=metric_user, source_ip=metric_source_ip).inc()
+                INVALID_USER_COUNTER.labels(
+                    user=metric_user,
+                    source_ip=metric_source_ip,
+                    source_display=metric_source_display,
+                ).inc()
             event = self._append_failed_attempt(
                 timestamp=timestamp,
                 user=user,
-                source_ip=source_ip,
+                source_ip=source_details["source_ip"],
+                source_hostname=source_details["source_hostname"],
+                source_display=source_details["source_display"],
                 port=port,
                 event_type=event_type,
             )
@@ -550,8 +722,14 @@ class SSHLogParser:
         match = CONNECTION_CLOSED_PREAUTH_RE.search(line)
         if match:
             _, source_ip, _ = match.groups()
+            source_details = self._source_details(source_ip)
+            metric_source_ip, metric_source_display = self._metric_source_labels(
+                source_details["source_ip"],
+                source_details["source_display"],
+            )
             PREAUTH_CLOSE_COUNTER.labels(
-                source_ip=self._metric_source_ip_label(source_ip)
+                source_ip=metric_source_ip,
+                source_display=metric_source_display,
             ).inc()
             return
 
@@ -563,15 +741,34 @@ class SSHLogParser:
         match = MAX_AUTH_RE.search(line)
         if match:
             _, invalid_user_flag, user, source_ip = match.groups()
+            source_details = self._source_details(source_ip)
             ERROR_COUNTER.labels(error_type="max_auth_exceeded").inc()
-            metric_user, metric_source_ip = self._metric_user_source_labels(user, source_ip)
-            FAILED_LOGIN_COUNTER.labels(user=metric_user, source_ip=metric_source_ip).inc()
+            (
+                metric_user,
+                metric_source_ip,
+                metric_source_display,
+            ) = self._metric_user_source_labels(
+                user,
+                source_details["source_ip"],
+                source_details["source_display"],
+            )
+            FAILED_LOGIN_COUNTER.labels(
+                user=metric_user,
+                source_ip=metric_source_ip,
+                source_display=metric_source_display,
+            ).inc()
             if invalid_user_flag:
-                INVALID_USER_COUNTER.labels(user=metric_user, source_ip=metric_source_ip).inc()
+                INVALID_USER_COUNTER.labels(
+                    user=metric_user,
+                    source_ip=metric_source_ip,
+                    source_display=metric_source_display,
+                ).inc()
             self._append_failed_attempt(
                 timestamp=timestamp,
                 user=user,
-                source_ip=source_ip,
+                source_ip=source_details["source_ip"],
+                source_hostname=source_details["source_hostname"],
+                source_display=source_details["source_display"],
                 port="",
                 event_type="max_auth_exceeded",
             )
@@ -729,7 +926,7 @@ class SSHLogParser:
     def refresh_runtime_state(self) -> None:
         """Refresh active-session and online-user gauges from `who`."""
         sessions = self._run_who()
-        active_counts: dict[tuple[str, str], int] = defaultdict(int)
+        active_counts: dict[tuple[str, str, str], int] = defaultdict(int)
 
         with self._lock:
             self._active_sessions = [dict(session) for session in sessions]
@@ -743,19 +940,26 @@ class SSHLogParser:
                     self.metrics_max_users,
                     session["user"],
                 )
-                metric_source_ip = self._bounded_metric_label(
-                    self._metric_source_ips,
-                    self.metrics_max_source_ips,
-                    session["source"],
+                metric_source_ip, metric_source_display = self._metric_source_labels(
+                    session["source_ip"],
+                    session["source_display"],
                 )
-                active_counts[(metric_user, metric_source_ip)] += 1
+                active_counts[(metric_user, metric_source_ip, metric_source_display)] += 1
                 active_user_labels.add(metric_user)
 
             current_labels = set(active_counts)
-            for user, source_ip in self._active_session_labels - current_labels:
-                ACTIVE_SESSIONS_GAUGE.labels(user=user, source_ip=source_ip).set(0)
-            for (user, source_ip), count in active_counts.items():
-                ACTIVE_SESSIONS_GAUGE.labels(user=user, source_ip=source_ip).set(count)
+            for user, source_ip, source_display in self._active_session_labels - current_labels:
+                ACTIVE_SESSIONS_GAUGE.labels(
+                    user=user,
+                    source_ip=source_ip,
+                    source_display=source_display,
+                ).set(0)
+            for (user, source_ip, source_display), count in active_counts.items():
+                ACTIVE_SESSIONS_GAUGE.labels(
+                    user=user,
+                    source_ip=source_ip,
+                    source_display=source_display,
+                ).set(count)
             self._active_session_labels = current_labels
 
             known_user_labels = {
@@ -825,18 +1029,24 @@ class SSHLogParser:
 
         login_counts: dict[str, int] = defaultdict(int)
         ip_counts: dict[str, int] = defaultdict(int)
+        source_counts: dict[str, int] = defaultdict(int)
         durations: list[float] = []
 
         for session in history:
             login_counts[session.user] += 1
             if session.source_ip:
                 ip_counts[session.source_ip] += 1
+            if session.source_display:
+                source_counts[session.source_display] += 1
             if session.duration_seconds is not None:
                 durations.append(session.duration_seconds)
 
         average_duration = sum(durations) / len(durations) if durations else 0
         top_source_ips = dict(
             sorted(ip_counts.items(), key=lambda item: item[1], reverse=True)[:20]
+        )
+        top_sources = dict(
+            sorted(source_counts.items(), key=lambda item: item[1], reverse=True)[:20]
         )
 
         return {
@@ -846,6 +1056,7 @@ class SSHLogParser:
             "unique_user_count": len(unique_users),
             "logins_per_user": dict(login_counts),
             "top_source_ips": top_source_ips,
+            "top_sources": top_sources,
             "average_session_duration_seconds": round(average_duration, 1),
             "active_sessions": active_sessions,
         }
@@ -892,7 +1103,13 @@ class SSHLogParser:
         result: list[dict[str, Any]] = []
         for user in all_users:
             sessions = user_sessions.get(user, [])
-            sources = sorted({session["source"] for session in sessions if session["source"]})
+            sources = sorted(
+                {
+                    session.get("source_display") or session.get("source", "")
+                    for session in sessions
+                    if session.get("source_display") or session.get("source")
+                }
+            )
             result.append(
                 {
                     "user": user,

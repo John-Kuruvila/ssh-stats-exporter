@@ -12,7 +12,7 @@ registry = CollectorRegistry()
 LOGIN_COUNTER = Counter(
     "ssh_logins_total",
     "Total successful SSH logins",
-    ["user", "source_ip", "auth_method"],
+    ["user", "source_ip", "source_display", "auth_method"],
     registry=registry,
 )
 LOGOUT_COUNTER = Counter(
@@ -24,19 +24,19 @@ LOGOUT_COUNTER = Counter(
 FAILED_LOGIN_COUNTER = Counter(
     "ssh_failed_logins_total",
     "Total failed SSH login attempts",
-    ["user", "source_ip"],
+    ["user", "source_ip", "source_display"],
     registry=registry,
 )
 INVALID_USER_COUNTER = Counter(
     "ssh_invalid_user_attempts_total",
     "Total SSH attempts with invalid usernames",
-    ["user", "source_ip"],
+    ["user", "source_ip", "source_display"],
     registry=registry,
 )
 ACTIVE_SESSIONS_GAUGE = Gauge(
     "ssh_active_sessions",
     "Currently active SSH sessions",
-    ["user", "source_ip"],
+    ["user", "source_ip", "source_display"],
     registry=registry,
 )
 UNIQUE_USERS_GAUGE = Gauge(
@@ -60,7 +60,7 @@ ERROR_COUNTER = Counter(
 PREAUTH_CLOSE_COUNTER = Counter(
     "ssh_preauth_connection_closed_total",
     "Connections closed before authentication completed",
-    ["source_ip"],
+    ["source_ip", "source_display"],
     registry=registry,
 )
 LOGIN_HEATMAP_GAUGE = Gauge(

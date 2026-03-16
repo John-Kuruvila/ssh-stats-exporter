@@ -105,7 +105,7 @@
   "schemaVersion": 39,
   "style": "dark",
   "time": {
-    "from": "now-24h",
+    "from": "now-7d",
     "to": "now"
   },
   "timepicker": {
@@ -167,15 +167,15 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values({__name__=~\"ssh_(logins|failed_logins|invalid_user_attempts)_total\"}, source_ip)",
+        "definition": "label_values({__name__=~\"ssh_(logins|failed_logins|invalid_user_attempts)_total\"}, source_display)",
         "hide": 0,
         "includeAll": true,
-        "label": "Source IP",
+        "label": "Source",
         "multi": true,
-        "name": "source_ip",
+        "name": "source",
         "options": [],
         "query": {
-          "query": "label_values({__name__=~\"ssh_(logins|failed_logins|invalid_user_attempts)_total\"}, source_ip)",
+          "query": "label_values({__name__=~\"ssh_(logins|failed_logins|invalid_user_attempts)_total\"}, source_display)",
           "refId": "A"
         },
         "refresh": 2,
@@ -341,7 +341,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(ssh_logins_total{user=~\"$user\", source_ip=~\"$source_ip\"}[$__range]))",
+          "expr": "sum(increase(ssh_logins_total{user=~\"$user\", source_display=~\"$source\"}[$__range]))",
           "refId": "A",
           "legendFormat": "Logins"
         }
@@ -399,7 +399,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(ssh_failed_logins_total{user=~\"$user\", source_ip=~\"$source_ip\"}[$__range]))",
+          "expr": "sum(increase(ssh_failed_logins_total{user=~\"$user\", source_display=~\"$source\"}[$__range]))",
           "refId": "A",
           "legendFormat": "Failed"
         }
@@ -586,7 +586,7 @@
     {
       "id": 70,
       "title": "Approximate User Session Timeline",
-      "description": "Each row is a user. Blocks are derived from sampled active-session gauges, so short gaps may be smoothed by the lookback window.",
+      "description": "Current/recent sessions by user only (not full history). Blocks from active-session gauges with 2m lookback.",
       "type": "state-timeline",
       "gridPos": {
         "h": 8,
@@ -600,7 +600,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (user) (max_over_time(ssh_active_sessions{user=~\"$user\", source_ip=~\"$source_ip\"}[2m]))",
+          "expr": "sum by (user) (max_over_time(ssh_active_sessions{user=~\"$user\", source_display=~\"$source\"}[2m]))",
           "refId": "A",
           "legendFormat": "{{user}}",
           "interval": "30s"
@@ -718,7 +718,7 @@
     {
       "id": 170,
       "title": "Approximate Source Session Timeline",
-      "description": "Each row is a source IP or host. Blocks are derived from sampled active-session gauges, so short gaps may be smoothed by the lookback window.",
+      "description": "Current/recent sessions by source only (not full history). Each row is a source; blocks from active-session gauges with 2m lookback.",
       "type": "state-timeline",
       "gridPos": {
         "h": 8,
@@ -732,9 +732,9 @@
       },
       "targets": [
         {
-          "expr": "sum by (source_ip) (max_over_time(ssh_active_sessions{user=~\"$user\", source_ip=~\"$source_ip\"}[2m]))",
+          "expr": "sum by (source_display) (max_over_time(ssh_active_sessions{user=~\"$user\", source_display=~\"$source\"}[2m]))",
           "refId": "A",
-          "legendFormat": "{{source_ip}}",
+          "legendFormat": "{{source_display}}",
           "interval": "30s"
         }
       ],
@@ -876,7 +876,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (user) (rate(ssh_logins_total{user=~\"$user\", source_ip=~\"$source_ip\"}[5m]))",
+          "expr": "sum by (user) (rate(ssh_logins_total{user=~\"$user\", source_display=~\"$source\"}[5m]))",
           "refId": "A",
           "legendFormat": "{{user}}"
         }
@@ -941,7 +941,7 @@
     {
       "id": 11,
       "title": "Active Sessions Over Time",
-      "description": "Number of active SSH sessions, broken down by user",
+      "description": "Number of active SSH sessions over time (current/recent only; for historical logins use “Logins per user over time” or “Logins in selected range”)",
       "type": "timeseries",
       "gridPos": {
         "h": 8,
@@ -955,7 +955,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (user) (ssh_active_sessions{user=~\"$user\", source_ip=~\"$source_ip\"})",
+          "expr": "sum by (user) (ssh_active_sessions{user=~\"$user\", source_display=~\"$source\"})",
           "refId": "A",
           "legendFormat": "{{user}}"
         }
@@ -1089,8 +1089,8 @@
     },
     {
       "id": 21,
-      "title": "Top Source IPs",
-      "description": "Most active SSH source IP addresses",
+      "title": "Top Sources",
+      "description": "Most active SSH source hostnames or IP addresses",
       "type": "bargauge",
       "gridPos": {
         "h": 9,
@@ -1104,9 +1104,9 @@
       },
       "targets": [
         {
-          "expr": "topk(10, sum by (source_ip) (increase(ssh_logins_total{user=~\"$user\", source_ip=~\"$source_ip\"}[$__range])))",
+          "expr": "topk(10, sum by (source_display) (increase(ssh_logins_total{user=~\"$user\", source_display=~\"$source\"}[$__range])))",
           "refId": "A",
-          "legendFormat": "{{source_ip}}"
+          "legendFormat": "{{source_display}}"
         }
       ],
       "fieldConfig": {
@@ -1213,8 +1213,8 @@
     },
     {
       "id": 23,
-      "title": "Failed Logins by Source IP",
-      "description": "Failed SSH login attempts grouped by source IP",
+      "title": "Failed Logins by Source",
+      "description": "Failed SSH login attempts grouped by source hostname or IP",
       "type": "bargauge",
       "gridPos": {
         "h": 9,
@@ -1228,9 +1228,9 @@
       },
       "targets": [
         {
-          "expr": "topk(10, sum by (source_ip) (increase(ssh_failed_logins_total{user=~\"$user\", source_ip=~\"$source_ip\"}[$__range])))",
+          "expr": "topk(10, sum by (source_display) (increase(ssh_failed_logins_total{user=~\"$user\", source_display=~\"$source\"}[$__range])))",
           "refId": "A",
-          "legendFormat": "{{source_ip}}"
+          "legendFormat": "{{source_display}}"
         }
       ],
       "fieldConfig": {
@@ -1306,12 +1306,12 @@
       },
       "targets": [
         {
-          "expr": "sum by (user) (increase(ssh_failed_logins_total{user=~\"$user\", source_ip=~\"$source_ip\"}[5m]))",
+          "expr": "sum by (user) (increase(ssh_failed_logins_total{user=~\"$user\", source_display=~\"$source\"}[5m]))",
           "refId": "A",
           "legendFormat": "{{user}}"
         },
         {
-          "expr": "sum(increase(ssh_invalid_user_attempts_total{user=~\"$user\", source_ip=~\"$source_ip\"}[5m]))",
+          "expr": "sum(increase(ssh_invalid_user_attempts_total{user=~\"$user\", source_display=~\"$source\"}[5m]))",
           "refId": "B",
           "legendFormat": "invalid users"
         }
@@ -1987,7 +1987,7 @@
     {
       "id": 50,
       "title": "Currently Active Sessions",
-      "description": "Live view of users currently logged into the server",
+      "description": "Live view of users currently logged in right now (not historical logins; use “Logins in selected range” or “Logins per user over time” for past activity)",
       "type": "table",
       "gridPos": {
         "h": 8,
@@ -2153,6 +2153,11 @@
             {
               "selector": "user",
               "text": "User",
+              "type": "string"
+            },
+            {
+              "selector": "source_display",
+              "text": "Source",
               "type": "string"
             },
             {
@@ -2527,14 +2532,101 @@
       "type": "row"
     },
     {
-      "id": 60,
-      "title": "Recent Failed Login Attempts",
-      "description": "Failed SSH authentication attempts with timestamps and source IPs",
+      "id": 62,
+      "title": "Logins in Selected Range (by User)",
+      "description": "Successful SSH login count per user for the dashboard time range. Use the time picker to include older logins.",
       "type": "table",
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
+        "y": 79
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "sum by (user) (increase(ssh_logins_total{user=~\"$user\", source_display=~\"$source\"}[$__range]))",
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "legendFormat": "{{user}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false,
+            "filterable": true
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "displayName",
+                "value": "Logins"
+              },
+              {
+                "id": "unit",
+                "value": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "md",
+        "footer": {
+          "show": true,
+          "countRows": true,
+          "reducer": [
+            "count"
+          ],
+          "fields": [
+            "user"
+          ]
+        },
+        "sortBy": [
+          {
+            "displayName": "Logins",
+            "desc": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 60,
+      "title": "Recent Failed Login Attempts",
+      "description": "Failed SSH authentication attempts with hostname-aware source labels and raw IPs",
+      "type": "table",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
         "y": 79
       },
       "datasource": {
@@ -2562,6 +2654,11 @@
             {
               "selector": "user",
               "text": "User",
+              "type": "string"
+            },
+            {
+              "selector": "source_display",
+              "text": "Source",
               "type": "string"
             },
             {
@@ -2630,7 +2727,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Source IP"
+              "options": "Source"
             },
             "properties": [
               {
@@ -2678,8 +2775,8 @@
       "type": "timeseries",
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 16,
         "y": 79
       },
       "datasource": {
@@ -2688,7 +2785,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (user) (increase(ssh_logins_total{user=~\"$user\", source_ip=~\"$source_ip\"}[1h]))",
+          "expr": "sum by (user) (increase(ssh_logins_total{user=~\"$user\", source_display=~\"$source\"}[1h]))",
           "refId": "A",
           "legendFormat": "{{user}}"
         }

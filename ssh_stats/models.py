@@ -9,6 +9,8 @@ class SessionInfo:
         "pid",
         "user",
         "source_ip",
+        "source_hostname",
+        "source_display",
         "auth_method",
         "port",
         "login_time",
@@ -21,6 +23,8 @@ class SessionInfo:
         pid: str,
         user: str,
         source_ip: str = "",
+        source_hostname: str = "",
+        source_display: str = "",
         auth_method: str = "",
         port: str = "",
         login_time: Optional[datetime] = None,
@@ -28,6 +32,8 @@ class SessionInfo:
         self.pid = pid
         self.user = user
         self.source_ip = source_ip
+        self.source_hostname = source_hostname
+        self.source_display = source_display or source_ip or source_hostname
         self.auth_method = auth_method
         self.port = port
         self.login_time = login_time
@@ -44,6 +50,8 @@ class SessionInfo:
             "pid": self.pid,
             "user": self.user,
             "source_ip": self.source_ip,
+            "source_hostname": self.source_hostname,
+            "source_display": self.source_display,
             "auth_method": self.auth_method,
             "port": self.port,
             "login_time": self.login_time.isoformat() if self.login_time else None,

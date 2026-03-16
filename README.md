@@ -162,6 +162,9 @@ All runtime options can be set with CLI flags or environment variables.
 | `--metrics-max-users` | `SSH_STATS_METRICS_MAX_USERS` | `200` | Max distinct metric `user` labels in bounded mode |
 | `--metrics-max-source-ips` | `SSH_STATS_METRICS_MAX_SOURCE_IPS` | `500` | Max distinct metric `source_ip` labels in bounded mode |
 | `--metrics-max-auth-methods` | `SSH_STATS_METRICS_MAX_AUTH_METHODS` | `32` | Max distinct metric `auth_method` labels in bounded mode |
+| `--hostname-lookup-timeout` | `SSH_STATS_HOSTNAME_LOOKUP_TIMEOUT` | `0.25` | Seconds to wait for a reverse-DNS lookup before falling back to the IP |
+| `--hostname-cache-ttl` | `SSH_STATS_HOSTNAME_CACHE_TTL` | `3600.0` | Seconds to cache successful reverse-DNS lookups |
+| `--hostname-negative-ttl` | `SSH_STATS_HOSTNAME_NEGATIVE_TTL` | `300.0` | Seconds to cache failed reverse-DNS lookups |
 | `--disable-json-api` | `SSH_STATS_DISABLE_JSON_API` | disabled | Disable `/api/*` endpoints |
 | `--cors-allow-origin` | `SSH_STATS_CORS_ALLOW_ORIGINS` | none | Browser origins allowed to read JSON API responses |
 
@@ -180,7 +183,7 @@ ssh-stats --help
 | `GET /api/sessions/active` | Current remote SSH sessions from the cached `who` snapshot |
 | `GET /api/sessions/history` | Completed session history |
 | `GET /api/failed` | Failed login history |
-| `GET /api/summary` | Aggregate totals, unique users, top IPs, average duration, and active sessions |
+| `GET /api/summary` | Aggregate totals, unique users, top sources, average duration, and active sessions |
 | `GET /api/heatmap` | Login heatmap rows for Grafana table panels |
 | `GET /api/users/status` | Known users with online/offline status, live session count, and sources |
 
@@ -194,25 +197,27 @@ Notes:
 
 - `from` and `to` accept ISO-8601 timestamps such as `2026-03-11T00:00:00Z`
 - `limit` defaults to `200` and is capped by the configured history buffer
-- Failed-attempt rows always include `timestamp`, `user`, `source_ip`, `port`, and `type`
+- Failed-attempt rows always include `timestamp`, `user`, `source_ip`, `source_hostname`, `source_display`, `port`, and `type`
+- Active and historical session rows include raw `source_ip` plus hostname-aware `source_display`
+- When a PTR record exists, `source_display` is formatted as `hostname (ip)`; otherwise it is the raw IP
 
 ## Exported Metrics
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `ssh_logins_total` | Counter | `user`, `source_ip`, `auth_method` | Successful SSH logins |
+| `ssh_logins_total` | Counter | `user`, `source_ip`, `source_display`, `auth_method` | Successful SSH logins |
 | `ssh_logouts_total` | Counter | `user` | Closed SSH sessions |
-| `ssh_failed_logins_total` | Counter | `user`, `source_ip` | Failed authentication attempts |
-| `ssh_invalid_user_attempts_total` | Counter | `user`, `source_ip` | Invalid username attempts |
-| `ssh_active_sessions` | Gauge | `user`, `source_ip` | Current active remote SSH sessions |
+| `ssh_failed_logins_total` | Counter | `user`, `source_ip`, `source_display` | Failed authentication attempts |
+| `ssh_invalid_user_attempts_total` | Counter | `user`, `source_ip`, `source_display` | Invalid username attempts |
+| `ssh_active_sessions` | Gauge | `user`, `source_ip`, `source_display` | Current active remote SSH sessions |
 | `ssh_unique_users_total` | Gauge | none | Distinct users seen in parsed logs |
 | `ssh_session_duration_seconds` | Histogram | `user` | Session duration buckets |
 | `ssh_errors_total` | Counter | `error_type` | SSH error counters |
-| `ssh_preauth_connection_closed_total` | Counter | `source_ip` | Pre-authentication disconnects |
+| `ssh_preauth_connection_closed_total` | Counter | `source_ip`, `source_display` | Pre-authentication disconnects |
 | `ssh_login_heatmap` | Gauge | `day_of_week`, `hour` | Login count by weekday and hour |
 | `ssh_user_online` | Gauge | `user` | User online state from the latest `who` refresh |
 
-In `bounded` mode, once the configured label caps are reached, new values are folded into the `__other__` bucket. This keeps metrics usable on noisy internet-facing SSH hosts without unbounded series growth.
+`source_ip` remains the raw compatibility label, while `source_display` is the hostname-aware label used by the bundled dashboard. In `bounded` mode, once the configured label caps are reached, new values are folded into the `__other__` bucket. This keeps metrics usable on noisy internet-facing SSH hosts without unbounded series growth.
 
 ## How It Works
 
