@@ -150,7 +150,8 @@ class SSHStatsParserTests(unittest.TestCase):
 
         metrics_output = generate_latest(registry).decode()
         self.assertIn(
-            'ssh_invalid_user_attempts_total{source_display="10.0.0.1",source_ip="10.0.0.1",user="ghost"} 1.0',
+            'ssh_invalid_user_attempts_total{source_display="10.0.0.1",'
+            'source_ip="10.0.0.1",user="ghost"} 1.0',
             metrics_output,
         )
 
@@ -168,11 +169,13 @@ class SSHStatsParserTests(unittest.TestCase):
 
         metrics_output = generate_latest(registry).decode()
         self.assertIn(
-            'ssh_failed_logins_total{source_display="10.0.0.1",source_ip="10.0.0.1",user="alice"} 1.0',
+            'ssh_failed_logins_total{source_display="10.0.0.1",'
+            'source_ip="10.0.0.1",user="alice"} 1.0',
             metrics_output,
         )
         self.assertIn(
-            'ssh_failed_logins_total{source_display="__other__",source_ip="__other__",user="__other__"} 1.0',
+            'ssh_failed_logins_total{source_display="__other__",'
+            'source_ip="__other__",user="__other__"} 1.0',
             metrics_output,
         )
 
